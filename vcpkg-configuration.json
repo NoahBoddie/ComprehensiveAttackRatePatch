@@ -11,6 +11,7 @@
         "packages": [
           "bethesda-skyrim-scripts",
           "commonlibsse-ng",
+          "commonlibsse-ng-flatrim",
           "script-extender-common",
           "skse"
         ]
