@@ -493,7 +493,7 @@ struct ValueEffectStartHook
         if constexpr (I == 4)
         {
             if (a_this->flags.any(RE::ActiveEffect::Flag::kDispelled) == true) {
-                logger::info("enhance effect dispelled.");
+                //logger::info("enhance effect dispelled.");
                 return;
             }
         }
@@ -1037,19 +1037,20 @@ struct SetEffectivenessHook
         }  
         return;
         //*/
+        if constexpr (false)
+        {
+            RE::Effect* effect = a_this->effect;
+            RE::EffectSetting* effect_setting = effect->baseEffect;
+            uint32_t setting_flags = effect->baseEffect->data.flags.underlying();
 
-        RE::Effect* effect = a_this->effect;
-        RE::EffectSetting* effect_setting = effect->baseEffect;
-        uint32_t setting_flags = effect->baseEffect->data.flags.underlying();
 
+            uint32_t effect_flags = a_this->flags.underlying();
+            uint32_t spec_flags = effect_flags >> 12;
 
-        uint32_t effect_flags = a_this->flags.underlying();
-        uint32_t spec_flags = effect_flags >> 12;
+            logger::info("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
 
-        logger::info("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
-
-        logger::info("checks; ig?: {}, dual cast: {}", (effect_flags & 0x1000), (spec_flags & 0x1));
-
+            logger::info("checks; ig?: {}, dual cast: {}", (effect_flags & 0x1000), (spec_flags & 0x1));
+        }
 
         //Inner func, might have to implement upper changes in as well.
         auto effectSettingFlags = a_this->effect->baseEffect->data.flags;
