@@ -106,6 +106,10 @@ int IsCallOrJump(uintptr_t addr)
 //SE: 0x692390, AE: 0x6CC2B0, VR: ???
 REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> ResetCache{ REL::RelocationID(39159, 40225, 0) };
 
+
+using SettingFlag = RE::EffectSetting::EffectSettingData::Flag;
+
+
 RE::FloatSetting minSpeed{ "fMinWeaponSpeed", 0.5f };
 RE::FloatSetting capSpeed{ "fWeaponSpeedCap", 2.f };
 //RE::FloatSetting lowCapSpeed{ "fLowWeaponSpeedCap", 2.f };
@@ -398,6 +402,10 @@ void correct(RE::Actor* t)
     }
 }
 
+
+//Note, currently these adjustments don't work if the magnitude gets flipped. Need to account for that sort of situations.
+// That will likely rest in handle actor tag. But due to the projects nature, I can add it any time the problem arises.
+
 //make a get left right function, that way I can move the padding if need be.
 //template both parameters maybe?
 void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dual, bool is_on)
@@ -498,10 +506,17 @@ struct ValueEffectStartHook
             }
         }
 
-        if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true)
+        auto effect = a_this->effect;
+
+
+        float alignment = a_this->value >= 0 ? 1 : -1;
+
+
+        if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true && 
+            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == false)
             //Redesign for it to use
             //return HandleSpeedEffect(a_this, a_this->value, I == 1, true);
-            return HandleSpeedEffect(a_this, a_this->effect->GetMagnitude(), I == 1, true);
+            return HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
 
         return;
 
@@ -556,9 +571,14 @@ struct ValueEffectFinishHook
     {
         func[I](a_this);
 
-        if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true)
+
+        float alignment = a_this->value >= 0 ? 1 : -1;
+
+
+        if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true &&
+            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == false)
             //HandleSpeedEffect(a_this, a_this->value, I == 1, false);
-            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude(), I == 1, false);
+            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, false);
 
         return;
 
@@ -729,13 +749,16 @@ struct ValueEffectLoadGameHook
 
         func[I](a_this);
 
+        float alignment = a_this->magnitude >= 0 ? 1 : -1;
+
         //This hit even though it was false. Curious. 
         // The idea works, however it will definitely have issues
-        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) && (
-            a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
+        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) && 
+            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == true) &&
+            (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
             !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions)))//Has effects applied currently
             //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
-            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude(), I == 1, true);
+            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
 
         switch (a_this->actorValue)
         {
@@ -998,8 +1021,6 @@ struct SetEffectivenessHook
 
     static void inner_thunk(RE::ActiveEffect* a_this, float effectiveness)
     {
-        using SettingFlag = RE::EffectSetting::EffectSettingData::Flag;
-        
         /*
         RE::Effect* effect = a_this->effect;
         RE::EffectSetting* effect_setting = effect->baseEffect;
