@@ -4,7 +4,7 @@
   "name": "comprehensive-speedmult-fix",
   "version-string": "1.0.0",
   "port-version": 0,
-  "description": "A plugin that fixes the infamou weapon speed mult glitch, as well as other QOL and gameplay fixes.",
+  "description": "A plugin that fixes the infamous weapon speed mult glitch, as well as other QOL and gameplay fixes.",
   "homepage": "https://www.skyrimng.com",
   "license": "Apache-2.0",
   "features": {
