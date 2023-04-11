@@ -508,7 +508,6 @@ struct ValueEffectStartHook
 
         auto effect = a_this->effect;
 
-
         float alignment = a_this->value >= 0 ? 1 : -1;
 
 
@@ -572,8 +571,9 @@ struct ValueEffectFinishHook
         func[I](a_this);
 
 
-        float alignment = a_this->value >= 0 ? 1 : -1;
+        auto effect = a_this->effect;
 
+        float alignment = a_this->value >= 0 ? 1 : -1;
 
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true &&
             effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == false)
@@ -749,12 +749,14 @@ struct ValueEffectLoadGameHook
 
         func[I](a_this);
 
+        auto effect = a_this->effect;
+
         float alignment = a_this->magnitude >= 0 ? 1 : -1;
 
         //This hit even though it was false. Curious. 
         // The idea works, however it will definitely have issues
         if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) && 
-            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == true) &&
+            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) &&
             (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
             !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions)))//Has effects applied currently
             //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
