@@ -1258,7 +1258,7 @@ struct Condition_HasKeywordHook
 
     static bool thunk(RE::TESObjectREFR* a_this, RE::BGSKeyword* a2, void* a3, double* a4)
     {
-        if (stricmp(a2->formEditorID.c_str(), installedString.data()) == 0)
+        if (a2 && a2->formEditorID.c_str() && stricmp(a2->formEditorID.c_str(), installedString.data()) == 0)
         {
             //Later, this value can also mean didn't install right if it's -1
             // This also might mean version so if you want to check if it's installed, do 
