@@ -111,7 +111,7 @@ using SettingFlag = RE::EffectSetting::EffectSettingData::Flag;
 
 
 RE::FloatSetting minSpeed{ "fMinWeaponSpeed", 0.5f };
-RE::FloatSetting capSpeed{ "fWeaponSpeedCap", 2.f };
+RE::FloatSetting capSpeed{ "fHighWeaponSpeedCap", 2.f };
 //RE::FloatSetting lowCapSpeed{ "fLowWeaponSpeedCap", 2.f };
 RE::FloatSetting speedTaper{ "fWeaponSpeedTaper", 0.2f };
 RE::FloatSetting maxSpeed{ "fMaxWeaponSpeed", 3.f };
@@ -133,7 +133,7 @@ float GetEffectiveSpeed(RE::ActorValueOwner* target, bool right)
     float max_speed = !maxSpeed.GetValue() ? std::numeric_limits<float>::infinity(): fmax(maxSpeed.GetValue(), 1.f);//If zero, no maximum
     float min_speed = fmax(minSpeed.GetValue(), 0.01f);//It has to have some impact. Should you be brutal enough, go for it.
     float speed_taper = fmin(speedTaper.GetValue(), 1.f);//Not allowed to exceed 1. Gets fucky if it does.
-    float cap_speed = std::clamp(capSpeed.GetValue(), min_speed, max_speed);
+    float cap_speed = !capSpeed.GetValue() ? std::clamp(capSpeed.GetValue(), min_speed, max_speed) : 0;
    
 
     float low_cap_speed = 0.75f;
@@ -141,30 +141,33 @@ float GetEffectiveSpeed(RE::ActorValueOwner* target, bool right)
     if (speed <= min_speed)
         return min_speed;
 
-    if (speed_taper <= 0)
-        return cap_speed;
-
 
     //These can be the same function, just altered or something.
-    if (speed > cap_speed)
+    if (cap_speed)
     {
-        float extra_speed = speed - cap_speed;
+        if (speed > cap_speed)
+        {
+            if (speed_taper <= 0)
+                return cap_speed;
 
-        float new_speed = cap_speed + sqrt(extra_speed) * pow(speed_taper, 1.0f / extra_speed);
 
-        speed = new_speed;
-        //speed = std::clamp(speed, minSpeed, capSpeed);
+            float extra_speed = speed - cap_speed;
+
+            float new_speed = cap_speed + sqrt(extra_speed) * pow(speed_taper, 1.0f / extra_speed);
+
+            speed = new_speed;
+            //speed = std::clamp(speed, minSpeed, capSpeed);
+        }
+        else if constexpr (false)// speed < low_cap_speed)
+        {
+            float extra_speed = low_cap_speed - speed;
+
+
+            float new_speed = low_cap_speed - sqrt(extra_speed) / pow(speed_taper, 1.0f / extra_speed);
+
+            speed = new_speed;
+        }
     }
-    else if constexpr (false)// speed < low_cap_speed)
-    {
-        float extra_speed = low_cap_speed - speed;
-
-
-        float new_speed = low_cap_speed - sqrt(extra_speed) / pow(speed_taper, 1.0f / extra_speed);
-
-        speed = new_speed;
-    }
-
 
     if (target->GetIsPlayerOwner() == true)
         logger::debug("max:{}, min:{}, tap:{}, h_cap:{}, l_cap:{} = spd:{}", max_speed, min_speed, speed_taper, cap_speed, low_cap_speed, speed);
@@ -200,7 +203,7 @@ struct WeaponSpeedMultHook
 
         if constexpr (is_write_branch)
         {
-            //SE: 0x3BE440, AE: 0x3D7FB0, VR: ???
+            //SE: (0x3BE440), AE: (0x3D7FB0), VR: ???
             REL::Relocation<uintptr_t> WeaponSpeedHook{ REL::RelocationID(25851, 26417) };
             
             auto& trampoline = SKSE::GetTrampoline();
@@ -305,7 +308,7 @@ struct CreateActorValueInfoHook
     static void Patch()
     {
         //I'm going to make this into a rewrite function.
-        //SE: 0x3E1790, AE: 0x3FC8E0, VR: ???
+        //SE: (0x3E1790), AE: (0x3FC8E0), VR: ???
         REL::Relocation<uintptr_t> InitAVI{ REL::RelocationID{ 26574, 27232 } };
 
         auto& trampoline = SKSE::GetTrampoline();
@@ -512,7 +515,7 @@ struct ValueEffectStartHook
 
 
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true && 
-            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == false)
+            effect->baseEffect->IsDetrimental() == false)
             //Redesign for it to use
             //return HandleSpeedEffect(a_this, a_this->value, I == 1, true);
             return HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
@@ -576,7 +579,7 @@ struct ValueEffectFinishHook
         float alignment = a_this->value >= 0 ? 1 : -1;
 
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true &&
-            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) == false)
+            effect->baseEffect->IsDetrimental() == false)
             //HandleSpeedEffect(a_this, a_this->value, I == 1, false);
             HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, false);
 
@@ -728,7 +731,7 @@ struct GetActorValueHook
 
 
 //VTABLE
-struct ValueEffectLoadGameHook
+struct ValueEffect_FinishLoadGameHook
 {
     static void Patch()
     {
@@ -756,7 +759,7 @@ struct ValueEffectLoadGameHook
         //This hit even though it was false. Curious. 
         // The idea works, however it will definitely have issues
         if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) && 
-            effect->baseEffect->data.flags.all(SettingFlag::kDetrimental) &&
+            effect->baseEffect->IsDetrimental() == false &&
             (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
             !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions)))//Has effects applied currently
             //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
@@ -797,7 +800,7 @@ struct ActorConstructorHook
 {
     static void Patch()
     {
-        REL::Relocation<uintptr_t> ctor_hook{ REL::RelocationID { 36195, 37174 }, 0x20 };//SE: 0x5CDBF0, AE: 604480, VR: ???
+        REL::Relocation<uintptr_t> ctor_hook{ REL::RelocationID { 36195, 37174 }, 0x20 };//SE: 0x5CDBF0, AE: 0x604480, VR: ???
 
         auto& trampoline = SKSE::GetTrampoline();
 
@@ -901,11 +904,11 @@ struct SetEffectivenessHook
     static void Patch()
     {
         //Use variantID at some point pls.
-        //SE: 0x540360, AE: NA(inlined), VR: ???
+        //SE: (0x540360), AE: NA(inlined), VR: ???
         //7B aint the real hook, nor EA
         auto inner_hook_addr = REL::RelocationID(33320, 0, 0).address();
         
-        //SE: 0x53DEB0, AE: 0x55EEA0, VR: ???
+        //SE: (0x53DEB0), AE: (0x55EEA0), VR: ???
         auto outer_hook_addr = REL::RelocationID(33277, 34052, 0).address();
         
         //SE: 0x554700, AE: 0x5771B0, VR: ???//0x4A3/0x656
@@ -1221,7 +1224,7 @@ struct Condition_HasKeywordHook
 {
     static void Patch()
     {
-        //SE: 0x2DDA40, AE: 0x2F3C80, VR: ???
+        //SE: (0x2DDA40), AE: (0x2F3C80), VR: ???
         auto hook_addr = REL::RelocationID(21187, 21644, 0).address();
         auto return_addr = hook_addr + 0x6;
         //*
@@ -1325,7 +1328,7 @@ SKSEPluginLoad(const LoadInterface* skse) {
     CreateActorValueInfoHook::Patch();
     ValueEffectStartHook::Patch();
     ValueEffectFinishHook::Patch();
-    ValueEffectLoadGameHook::Patch();
+    ValueEffect_FinishLoadGameHook::Patch();
     GetActorValueHook::Patch();
     GetActorValueModifierHook::Patch();
     ActorConstructorHook::Patch();
