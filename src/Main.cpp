@@ -105,6 +105,8 @@ int IsCallOrJump(uintptr_t addr)
 
 //SE: 0x692390, AE: 0x6CC2B0, VR: ???
 REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> ResetCache{ REL::RelocationID(39159, 40225, 0) };
+//SE: (0x63E080), AE: (0x676820)
+REL::Relocation<void(RE::ActorValueStorage*, RE::ActorValue)> ResetBaseValue{ REL::RelocationID(38063, 39018, 0) };
 
 
 using SettingFlag = RE::EffectSetting::EffectSettingData::Flag;
@@ -337,13 +339,22 @@ struct CreateActorValueInfoHook
     static inline REL::Relocation<decltype(thunk<>)> func[2];
 };
 
+//The idea in creating this like this, I can manipulate the end padding however I'd choose to.
+// At a later point, it very well may become a float instead.
+using SpeedTag = uint32_t;
 
-uint32_t& GetActorTag(RE::Actor* target, bool right)
+
+SpeedTag& GetActorTag(RE::Actor* target, bool right)
 {
+    //Available padding pad98, pad1EC
+    //Not available pad0EC
+    //Need a way to validate padding.
+
     if (right)
-        return target->pad1C;
+        return reinterpret_cast<SpeedTag&>(target->pad1C);
     else
-       return target->GetActorRuntimeData().pad0EC;
+        //return reinterpret_cast<SpeedTag&>(target->GetActorRuntimeData().pad0EC);
+        return reinterpret_cast<SpeedTag&>(target->GetActorRuntimeData().pad1EC);
 }
 
 //inline uint32_t& GetActorTag(RE::Actor* target, RE::ActorValue av)
@@ -376,6 +387,8 @@ int HandleActorTag(RE::ValueModifierEffect* a_this, bool is_on, float value)
         if (value > -1.f)//if value is returning a small sum or restoring a large decrement.
             return 0;
     }
+    
+    logger::debug("value increment, {}", value > 0);
 
     return value > 0 ? 1 : -1;
 }
@@ -544,7 +557,8 @@ struct ValueEffectStartHook
             //is dual modifier, peak a bit into the base object for a second round of this function
         }
 
-        logger::info("ON {}: {}", names[I], a_this->value);
+        //logger::info("ON {}: {}", names[I], a_this->value);
+        logger::info("ON {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -583,7 +597,7 @@ struct ValueEffectFinishHook
             //HandleSpeedEffect(a_this, a_this->value, I == 1, false);
             HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, false);
 
-        return;
+        //return;
 
         switch (a_this->actorValue)
         {
@@ -608,7 +622,8 @@ struct ValueEffectFinishHook
             //is dual modifier, peak a bit into the base object for a second round of this function
         }
 
-        logger::info("OFF {}: {}", names[I], a_this->value);
+        //logger::info("OFF {}: {}", names[I], a_this->value);
+        logger::info("OFF {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -785,7 +800,8 @@ struct ValueEffect_FinishLoadGameHook
         };
         
 
-        logger::debug("LOAD {}: {}", names[I], a_this->magnitude);
+        //logger::debug("LOAD {}: {}", names[I], a_this->magnitude);
+        logger::debug("LOAD {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -847,13 +863,58 @@ struct Actor__FinishLoadGameHook
     {
         func[I](a_this, a2);
 
-        if (RE::AIProcess* process = a_this->GetActorRuntimeData().currentProcess; process){
-            if (RE::CachedValues* cache = process->cachedValues; cache) {
-                logger::trace("Resetting cache {:08X}", a_this->formID);
-                ResetCache(cache, RE::ActorValue::kWeaponSpeedMult);
-                ResetCache(cache, RE::ActorValue::kLeftWeaponSpeedMultiply);
+        static bool once = false;
+        
+        if (!once) {
+            if (GetActorTag(a_this, k_left) || GetActorTag(a_this, k_right)) {
+                logger::warn("Cached values for left/right increases are not zero. Some conflict maybe observed. Notify CASP mod author.");
+                once = true;
             }
         }
+
+        float right_base = a_this->AsActorValueOwner()->GetBaseActorValue(RE::ActorValue::kWeaponSpeedMult);
+        float left_base = a_this->AsActorValueOwner()->GetBaseActorValue(RE::ActorValue::kLeftWeaponSpeedMultiply);
+
+        float right_mod = a_this->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kWeaponSpeedMult);
+        float left_mod = a_this->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kPermanent, RE::ActorValue::kLeftWeaponSpeedMultiply);
+
+        float right_tmp = a_this->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kWeaponSpeedMult);
+        float left_tmp = a_this->GetActorValueModifier(RE::ACTOR_VALUE_MODIFIER::kTemporary, RE::ActorValue::kLeftWeaponSpeedMultiply);
+
+
+        logger::debug("{:08X}: left {}/{}/{}, right {}/{}/{}", a_this->formID, left_base, left_mod, left_tmp, right_base, right_mod, right_tmp);
+       
+
+        {
+            if (RE::AIProcess* process = a_this->GetActorRuntimeData().currentProcess; process) {
+                if (RE::CachedValues* cache = process->cachedValues; cache) {
+                    logger::trace("Resetting cache {:08X}", a_this->formID);
+                    
+                    //if (!right_base)
+                        ResetCache(cache, RE::ActorValue::kWeaponSpeedMult);
+                    //if (!left_base)
+                        ResetCache(cache, RE::ActorValue::kLeftWeaponSpeedMultiply);
+                }
+            }
+        }
+
+        //I was thinking of calling the reset function on the actor value storage, but who really cares innit? This seems good enough.
+        // But just in case, noting the intent was there
+
+        //Never mind, I'm trying it.
+        if (!right_base) {
+            //a_this->AsActorValueOwner()->SetBaseActorValue(RE::ActorValue::kWeaponSpeedMult, 1.0f);
+            ResetBaseValue(&a_this->GetActorRuntimeData().avStorage, RE::ActorValue::kWeaponSpeedMult);
+        }
+        if (!left_base) {
+            //a_this->AsActorValueOwner()->SetBaseActorValue(RE::ActorValue::kLeftWeaponSpeedMultiply, 1.0f);
+            ResetBaseValue(&a_this->GetActorRuntimeData().avStorage, RE::ActorValue::kLeftWeaponSpeedMultiply);
+        }
+        
+
+        if (!right_base || !left_base)
+            logger::warn("Setting base speed (left: {}, right: {}) on {}({:08X}). If this/these being zero is intended behaviour, notify CASP mod author.",
+                !left_base, !right_base, a_this->GetName(), a_this->formID);
     }
 
 
