@@ -882,7 +882,7 @@ struct ModBaseActorValueHook
 
         //Unlike most things or anything at all, I'm re doing this function. I'm unsure why something that's exactly the same causes so much
         // problems, but hopefully this rework will prevent me from running into the same issue.
-        float value = a_this->GetActorValue(a2) + a3;
+        float value = a_this->GetBaseActorValue(a2) + a3;
 
         switch (a2)
         {
