@@ -1,5 +1,7 @@
 #include "xbyak/xbyak.h"
 #include "nlohmann/json.hpp"
+#include "PerkEntryPointExtenderAPI.h"
+
 using namespace SKSE;
 using namespace SKSE::log;
 using namespace SKSE::stl;
@@ -104,7 +106,7 @@ int IsCallOrJump(uintptr_t addr)
 }
 
 //SE: 0x692390, AE: 0x6CC2B0, VR: ???
-REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> ResetCache{ REL::RelocationID(39159, 40225, 0) };
+REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> InvalidateTotalCache{ REL::RelocationID(39159, 40225, 0) };
 //SE: (0x63E080), AE: (0x676820)
 REL::Relocation<void(RE::ActorValueStorage*, RE::ActorValue)> ResetBaseValue{ REL::RelocationID(38063, 39018, 0) };
 
@@ -118,22 +120,65 @@ RE::FloatSetting capSpeed{ "fHighWeaponSpeedCap", 2.f };
 RE::FloatSetting speedTaper{ "fWeaponSpeedTaper", 0.2f };
 RE::FloatSetting maxSpeed{ "fMaxWeaponSpeed", 3.f };
 
-
+//An undisclosed value that serves as the very limits to how slow an attack can be. Made to ensure that low values never mean normal attack speed.
+constexpr float k_closeToZero = 0.01f;
 //This value is used to ensure that whatever value the magnitude is able to go into
 RE::FloatSetting magnitudeComparison{ "fMagnitudeComparison", 10000.f };
 
 
+static RE::TESObjectWEAP* fists = RE::TESForm::LookupByID<RE::TESObjectWEAP>(0x1F4);
+
+RE::TESObjectWEAP* GetFists()
+{
+    static RE::TESObjectWEAP* a_fists = nullptr;
+
+    if (!a_fists)
+        a_fists = RE::TESForm::LookupByID<RE::TESObjectWEAP>(0x1F4);
+    
+    return a_fists;
+}
+
 float GetEffectiveSpeed(RE::ActorValueOwner* target, bool right)
 {
-    float speed;
+    RE::ActorValue speed_av = right ? RE::ActorValue::kWeaponSpeedMult : RE::ActorValue::kLeftWeaponSpeedMultiply;
 
-    if (right)
-        speed = target->GetActorValue(RE::ActorValue::kWeaponSpeedMult);
-    else
-        speed = target->GetActorValue(RE::ActorValue::kLeftWeaponSpeedMultiply);
+    float speed = target->GetActorValue(speed_av);
+
+    //if (right)
+    //    speed = target->GetActorValue(RE::ActorValue::kWeaponSpeedMult);
+    //else
+    //    speed = target->GetActorValue(RE::ActorValue::kLeftWeaponSpeedMultiply);
+    
+    //TODO:Check the performance of this, if by chance it makes things slow, I can curb it by only firing if someone is in a non-idle attack state.
+    if (RE::Actor* actor = skyrim_cast<RE::Actor*>(target); actor)
+    {
+        auto data = actor->GetEquippedEntryData(!right);
+
+        if (actor->IsAttacking() == true)
+        {
+            if (!data || data->object->formType == RE::FormType::Weapon)
+            {
+                auto old = speed;
+                RE::TESObjectWEAP* weapon = !data ? GetFists() : data->object->As<RE::TESObjectWEAP>();
+                RE::HandleEntryPoint(RE::PerkEntryPoint::kModBowZoom, actor, &speed, "AttackSpeed", 1, { weapon });
+                //For the upteenth time, the fucking convinence function fucks shit up.
+                //if (auto res = RE::HandleEntryPoint(RE::PerkEntryPoint::kModBowZoom, actor, speed, "AttackSpeed", 1, weapon); res != PEPE::RequestResult::Success)
+                //    logger::info("invalid {}", (int)res);
+            }
+        }
+    }
+
+    float base_av = target->GetBaseActorValue(speed_av);
+
+    if (base_av == 0)
+        base_av = k_closeToZero;
 
     float max_speed = !maxSpeed.GetValue() ? std::numeric_limits<float>::infinity(): fmax(maxSpeed.GetValue(), 1.f);//If zero, no maximum
-    float min_speed = fmax(minSpeed.GetValue(), 0.01f);//It has to have some impact. Should you be brutal enough, go for it.
+    
+    //It's absolutely minimum value is a save value away from 0
+    // additionally, your minimum speed can never be higher than your base attack speed.
+    // this is allowed because no base game system ever messes with that, it's an active choice on the part of a developer or player. As such, let em.
+    float min_speed = std::clamp(minSpeed.GetValue(), k_closeToZero, base_av);//fmax(base_av, fmax(minSpeed.GetValue(), 0.01f));
     float speed_taper = fmin(speedTaper.GetValue(), 1.f);//Not allowed to exceed 1. Gets fucky if it does.
     float cap_speed = !capSpeed.GetValue() ? std::clamp(capSpeed.GetValue(), min_speed, max_speed) : 0;
    
@@ -162,6 +207,7 @@ float GetEffectiveSpeed(RE::ActorValueOwner* target, bool right)
         }
         else if constexpr (false)// speed < low_cap_speed)
         {
+            //The space to work on 
             float extra_speed = low_cap_speed - speed;
 
 
@@ -341,7 +387,7 @@ struct CreateActorValueInfoHook
 
 //The idea in creating this like this, I can manipulate the end padding however I'd choose to.
 // At a later point, it very well may become a float instead.
-using SpeedTag = uint32_t;
+using SpeedTag = float;
 
 
 SpeedTag& GetActorTag(RE::Actor* target, bool right)
@@ -364,9 +410,6 @@ SpeedTag& GetActorTag(RE::Actor* target, bool right)
 
 constexpr bool k_right = true;
 constexpr bool k_left = false;
-
-//The existence of this is solely to scream when I take it away.
-constexpr size_t VR_CALLER = 0;
 
 
 int HandleActorTag(RE::ValueModifierEffect* a_this, bool is_on, float value)
@@ -446,20 +489,20 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
             logger::debug("Null target");
             return;
         }
+
         switch (a_this->actorValue)
         {
         case RE::ActorValue::kWeaponSpeedMult:
             //target->pad1C += HandleActorTag(a_this, is_on, value);
             GetActorTag(target, k_right) += HandleActorTag(a_this, is_on, value);
-            logger::debug("Right1st: {}, {}", value, GetActorTag(target, k_right));
+            logger::debug("Right1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_right));
             break;
+
         case RE::ActorValue::kLeftWeaponSpeedMultiply:
             //target->GetActorRuntimeData().pad0EC += HandleActorTag(a_this, is_on, value);
             GetActorTag(target, k_left) += HandleActorTag(a_this, is_on, value);
-            logger::debug("Left1st: {}, {}", value, GetActorTag(target, k_left));
+            logger::debug("Left1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_left));
             break;
-        default:
-            logger::debug("{}", a_this->actorValue);
         }
 
         
@@ -467,22 +510,20 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
         {
             RE::EffectSetting* setting = a_this->GetBaseObject();
             
-            
+            //Dual value mod hasn't been done yet and prick that I am I don't feel like making it
+            //I'm also going to stick with this because it's the correct offset.
             float dual_mod = *stl::adjust_pointer<float>(a_this, 0x98);//GetDualMod(a_this);//
-
-            logger::debug("dual mod, {}", dual_mod);
-
+            //float dual_mod = skyrim_cast<RE::DualValueModifierEffect*>(a_this)->secondaryAVWeight;
+            
             switch (setting->data.secondaryAV)
             {
             case RE::ActorValue::kWeaponSpeedMult:
-                //target->pad1C += HandleActorTag(a_this, is_on, value * dual_mod);
                 GetActorTag(target, k_right) += HandleActorTag(a_this, is_on, value * dual_mod);
-                logger::debug("Right2nd: {}, {}", value * dual_mod, GetActorTag(target, k_right));
+                logger::debug("Right2nd {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value * dual_mod, GetActorTag(target, k_right));
                 break;
             case RE::ActorValue::kLeftWeaponSpeedMultiply:
-                //target->GetActorRuntimeData().pad0EC += HandleActorTag(a_this, is_on, value * dual_mod);
                 GetActorTag(target, k_left) += HandleActorTag(a_this, is_on, value * dual_mod);
-                logger::debug("Left2nd: {}, {}", value * dual_mod, GetActorTag(target, k_left));//Is 2 for some odd reason.
+                logger::debug("Left2nd {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value * dual_mod, GetActorTag(target, k_left));
                 break;
             }
         }
@@ -493,23 +534,43 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
 
 //NOTICE, to all vtable hooks, ValueAndConditionsEffect may be implemented soon, so might want to get my hooks into that.
 
+//The idea is that either the index is one of these, or if it's numeric limits void pointer.
+// the void is so the pointer doesn't get shifted when submitted, which it shouldn't but at this point
+// in the game I'm fucking paranoid and this has fixed shit before so I just pray it's fucking over at this point
+
+using EffectTypes = std::tuple<
+    RE::ValueModifierEffect,
+    RE::DualValueModifierEffect,
+    RE::ValueAndConditionsEffect,
+    RE::PeakValueModifierEffect,
+    RE::EnhanceWeaponEffect,
+    void>;
+
+constexpr size_t VoidEffect = std::tuple_size<EffectTypes>::value - 1;
+
+template<size_t I>
+using ModifierEffect = std::tuple_element_t<I, EffectTypes>;
+
+
 //VTABLE
 struct ValueEffectStartHook
 {
     static void Patch()
     {
-        func[0] = REL::Relocation<uintptr_t>{ RE::VTABLE_ValueModifierEffect[0] }.write_vfunc(20, thunk<0>);
-        func[1] = REL::Relocation<uintptr_t>{ RE::VTABLE_DualValueModifierEffect[0] }.write_vfunc(20, thunk<1>);
-        func[2] = REL::Relocation<uintptr_t>{ RE::VTABLE_AccumulatingValueModifierEffect[0] }.write_vfunc(20, thunk<2>);
-        func[3] = REL::Relocation<uintptr_t>{ RE::VTABLE_PeakValueModifierEffect[0] }.write_vfunc(20, thunk<3>);
-        func[4] = REL::Relocation<uintptr_t>{ RE::VTABLE_EnhanceWeaponEffect[0] }.write_vfunc(20, thunk<4>);
+        func[0] = REL::Relocation<uintptr_t>{ ModifierEffect<0>::VTABLE[0] }.write_vfunc(20, thunk<0>);
+        func[1] = REL::Relocation<uintptr_t>{ ModifierEffect<1>::VTABLE[0] }.write_vfunc(20, thunk<1>);
+        func[2] = REL::Relocation<uintptr_t>{ ModifierEffect<2>::VTABLE[0] }.write_vfunc(20, thunk<2>);
+        func[3] = REL::Relocation<uintptr_t>{ ModifierEffect<3>::VTABLE[0] }.write_vfunc(20, thunk<3>);
+        func[4] = REL::Relocation<uintptr_t>{ ModifierEffect<4>::VTABLE[0] }.write_vfunc(20, thunk<4>);
         
         logger::info("ValueEffectStartHook complete...");
     }
-
-
-    template <int I = 0>
-    static void thunk(RE::ValueModifierEffect* a_this)
+   
+    //Update this to handle the effect type properly
+    // Also accumulating shouldn't be hooked. One wouldn't put the speed changes in that (because it's gradual)
+    // Hook value and conditions probs
+    template <int I = VoidEffect>
+    static void thunk(ModifierEffect<I>* a_this)
     {
         func[I](a_this);
         
@@ -526,23 +587,20 @@ struct ValueEffectStartHook
 
         float alignment = a_this->value >= 0 ? 1 : -1;
 
+        float magnitude = effect->GetMagnitude();
 
+
+        
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true && 
             effect->baseEffect->IsDetrimental() == false)
             //Redesign for it to use
             //return HandleSpeedEffect(a_this, a_this->value, I == 1, true);
-            return HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
-
-        return;
-
-        switch (a_this->actorValue)
-        {
-        case RE::ActorValue::kWeaponSpeedMult:
-        case RE::ActorValue::kLeftWeaponSpeedMultiply:
-            break;
-        default:
+            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
+        else
             return;
-        }
+        
+
+       
 
         static constexpr std::string_view names[]
         {
@@ -558,7 +616,7 @@ struct ValueEffectStartHook
         }
 
         //logger::info("ON {}: {}", names[I], a_this->value);
-        logger::info("ON {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
+        logger::debug("ON {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -572,18 +630,18 @@ struct ValueEffectFinishHook
 {
     static void Patch()
     {
-        func[0] = REL::Relocation<uintptr_t>{ RE::VTABLE_ValueModifierEffect[0] }.write_vfunc(21, thunk<0>);
-        func[1] = REL::Relocation<uintptr_t>{ RE::VTABLE_DualValueModifierEffect[0] }.write_vfunc(21, thunk<1>);
-        func[2] = REL::Relocation<uintptr_t>{ RE::VTABLE_AccumulatingValueModifierEffect[0] }.write_vfunc(21, thunk<2>);
-        func[3] = REL::Relocation<uintptr_t>{ RE::VTABLE_PeakValueModifierEffect[0] }.write_vfunc(21, thunk<3>);
-        func[4] = REL::Relocation<uintptr_t>{ RE::VTABLE_EnhanceWeaponEffect[0] }.write_vfunc(21, thunk<4>);
+        func[0] = REL::Relocation<uintptr_t>{ ModifierEffect<0>::VTABLE[0] }.write_vfunc(21, thunk<0>);
+        func[1] = REL::Relocation<uintptr_t>{ ModifierEffect<1>::VTABLE[0] }.write_vfunc(21, thunk<1>);
+        func[2] = REL::Relocation<uintptr_t>{ ModifierEffect<2>::VTABLE[0] }.write_vfunc(21, thunk<2>);
+        func[3] = REL::Relocation<uintptr_t>{ ModifierEffect<3>::VTABLE[0] }.write_vfunc(21, thunk<3>);
+        func[4] = REL::Relocation<uintptr_t>{ ModifierEffect<4>::VTABLE[0] }.write_vfunc(21, thunk<4>);
 
         logger::info("ValueEffectFinishHook complete...");
     }
 
 
-    template <int I = 0>
-    static void thunk(RE::ValueModifierEffect* a_this)
+    template <int I = VoidEffect>
+    static void thunk(ModifierEffect<I>* a_this)
     {
         func[I](a_this);
 
@@ -605,8 +663,8 @@ struct ValueEffectFinishHook
         case RE::ActorValue::kLeftWeaponSpeedMultiply:
             //Only allowed to proceed if it's recovers and the value is at or equal to 1.
             break;
-        default:
-            return;
+        //default:
+        //    return;
         }
 
         static constexpr std::string_view names[]
@@ -623,7 +681,7 @@ struct ValueEffectFinishHook
         }
 
         //logger::info("OFF {}: {}", names[I], a_this->value);
-        logger::info("OFF {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
+        logger::debug("OFF {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -682,20 +740,25 @@ struct GetActorValueModifierHook
 
         if (a2 != RE::ACTOR_VALUE_MODIFIER::kTemporary)
             return result;
+        
+        float offset;
 
         switch (a3)
         {
         case RE::ActorValue::kWeaponSpeedMult:
             //return result - a_this->pad1C;
-            return result - GetActorTag(a_this, k_right);
-
+            offset = GetActorTag(a_this, k_right);
+            break;
         case RE::ActorValue::kLeftWeaponSpeedMultiply:
             //return result - a_this->GetActorRuntimeData().pad0EC;
-            return result - GetActorTag(a_this, k_left);
-
+            offset = GetActorTag(a_this, k_left);
+            break;
         default:
             return result;
         }
+
+        
+        return result - offset;
     }
 
     static inline REL::Relocation<decltype(thunk)> func;
@@ -744,24 +807,125 @@ struct GetActorValueHook
     //static inline REL::Relocation<decltype(thunk)> func_;
 };
 
+//VTABLE
+struct SetBaseActorValueHook
+{
+    //Set base actor value is going to have to be a tad weird. I'm going to create a situation where
+    //Also, this patch goes live at the start of data set. Reason being that if it's being called to, this value will be completely
+    // nonsense to anything else interpretting it.
+    inline static float intentionalZeroValue = std::nanf("0x69420");
+
+
+    static void Patch()
+    {
+        //*
+        REL::Relocation<uintptr_t> PlayerCharacter__Actor_VTable{ RE::VTABLE_PlayerCharacter[5] };
+        REL::Relocation<uintptr_t> Character__Actor_VTable{ RE::VTABLE_Character[5] };
+
+        func[0] = PlayerCharacter__Actor_VTable.write_vfunc(0x04, thunk<0>);
+        func[1] = Character__Actor_VTable.write_vfunc(0x04, thunk<1>);
+
+        logger::info("SetBaseActorValueHook complete...");
+    }
+
+    template <int I>
+    static void thunk(RE::ActorValueOwner* a_this, RE::ActorValue a2, float a3)
+    {
+
+        switch (a2)
+        {
+        case RE::ActorValue::kWeaponSpeedMult:
+        case RE::ActorValue::kLeftWeaponSpeedMultiply:
+            if (a3 == intentionalZeroValue) {
+                a3 = 0;
+            }
+            else if (a3 == 0) {
+                const auto log = RE::ConsoleLog::GetSingleton();
+
+                if (log->IsConsoleMode() == true)
+                    log->Print("Note: due to CARP setting attack speed to 0 will be replaced with 1.");
+
+                a3 = 1;
+            }
+            break;
+        }
+
+        return func[I](a_this, a2, a3);
+    }
+
+
+
+    static inline REL::Relocation<decltype(thunk<0>)> func[2];
+    //static inline REL::Relocation<decltype(thunk)> func_;
+};
+
+
+//VTABLE
+struct ModBaseActorValueHook
+{
+    static void Patch()
+    {
+        //*
+        REL::Relocation<uintptr_t> PlayerCharacter__Actor_VTable{ RE::VTABLE_PlayerCharacter[5] };
+        REL::Relocation<uintptr_t> Character__Actor_VTable{ RE::VTABLE_Character[5] };
+
+        func[0] = PlayerCharacter__Actor_VTable.write_vfunc(0x05, thunk);
+        func[1] = Character__Actor_VTable.write_vfunc(0x05, thunk);
+
+        logger::info("ModBaseActorValueHook complete...");
+    }
+
+    static void thunk(RE::ActorValueOwner* a_this, RE::ActorValue a2, float a3)
+    {
+        if (!a3)
+            return;
+
+        //Unlike most things or anything at all, I'm re doing this function. I'm unsure why something that's exactly the same causes so much
+        // problems, but hopefully this rework will prevent me from running into the same issue.
+        float value = a_this->GetActorValue(a2) + a3;
+
+        switch (a2)
+        {
+        case RE::ActorValue::kWeaponSpeedMult:
+        case RE::ActorValue::kLeftWeaponSpeedMultiply:
+            if (value == 0 && true) {//Confirm that it's both equal to zero, but ALSO that the patch is active. Sending NAN is undefined behaviour otherwise.
+                value = SetBaseActorValueHook::intentionalZeroValue;
+            }
+            break;
+        }
+
+        return a_this->SetActorValue(a2, value);
+
+
+        
+    }
+
+
+
+    static inline REL::Relocation<decltype(thunk)> func[2];
+    //static inline REL::Relocation<decltype(thunk)> func_;
+};
+
+
+
 
 //VTABLE
 struct ValueEffect_FinishLoadGameHook
 {
     static void Patch()
     {
-        func[0] = REL::Relocation<uintptr_t>{ RE::VTABLE_ValueModifierEffect[0] }.write_vfunc(10, thunk<0>);
-        func[1] = REL::Relocation<uintptr_t>{ RE::VTABLE_DualValueModifierEffect[0] }.write_vfunc(10, thunk<1>);
-        func[2] = REL::Relocation<uintptr_t>{ RE::VTABLE_AccumulatingValueModifierEffect[0] }.write_vfunc(10, thunk<2>);
-        func[3] = REL::Relocation<uintptr_t>{ RE::VTABLE_PeakValueModifierEffect[0] }.write_vfunc(10, thunk<3>);
-        func[4] = REL::Relocation<uintptr_t>{ RE::VTABLE_EnhanceWeaponEffect[0] }.write_vfunc(10, thunk<4>);
+        func[0] = REL::Relocation<uintptr_t>{ ModifierEffect<0>::VTABLE[0] }.write_vfunc(10, thunk<0>);
+        func[1] = REL::Relocation<uintptr_t>{ ModifierEffect<1>::VTABLE[0] }.write_vfunc(10, thunk<1>);
+        func[2] = REL::Relocation<uintptr_t>{ ModifierEffect<2>::VTABLE[0] }.write_vfunc(10, thunk<2>);
+        func[3] = REL::Relocation<uintptr_t>{ ModifierEffect<3>::VTABLE[0] }.write_vfunc(10, thunk<3>);
+        func[4] = REL::Relocation<uintptr_t>{ ModifierEffect<4>::VTABLE[0] }.write_vfunc(10, thunk<4>);
 
         logger::info("ValueEffectLoadGameHook complete...");
     }
 
 
-    template <int I = 0>
-    static void thunk(RE::ValueModifierEffect* a_this)
+    template <int I = VoidEffect>
+    static void thunk(ModifierEffect<I>* a_this)
     {
         constexpr auto applied_effect_flag = RE::ActiveEffect::Flag(1 << 16);
 
@@ -771,24 +935,31 @@ struct ValueEffect_FinishLoadGameHook
 
         float alignment = a_this->magnitude >= 0 ? 1 : -1;
 
+
+        float magnitude = effect->GetMagnitude();
+
+        //If for some reason something is a value modifier that modifies speed that is zero, but the current value is equal to 1, were going to treat it like its 1.
+        // only doing in load right now, because that's where the problem
+        if (auto act_mag = abs(a_this->value); !magnitude && act_mag >= 1)
+            magnitude = act_mag;
+
+
         //This hit even though it was false. Curious. 
         // The idea works, however it will definitely have issues
-        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) && 
+        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) &&
             effect->baseEffect->IsDetrimental() == false &&
             (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
-            !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions)))//Has effects applied currently
+                !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions))) {//Has effects applied currently
             //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
-            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
-
-        switch (a_this->actorValue)
+            //HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
+            HandleSpeedEffect(a_this, magnitude * alignment, I == 1, true);
+        }
+        else
         {
-        case RE::ActorValue::kWeaponSpeedMult:
-        case RE::ActorValue::kLeftWeaponSpeedMultiply:
-            //Only allowed to proceed if it's recovers and the value is at or equal to 1.
-            break;
-        default:
             return;
         }
+
+        
 
         static constexpr std::string_view names[]
         {
@@ -801,7 +972,7 @@ struct ValueEffect_FinishLoadGameHook
         
 
         //logger::debug("LOAD {}: {}", names[I], a_this->magnitude);
-        logger::debug("LOAD {}: {}", names[I], a_this->effect->GetMagnitude() * alignment);
+        logger::debug("LOAD {} ({}): {}", names[I], effect->baseEffect->GetName(), a_this->effect->GetMagnitude() * alignment);
     }
 
 
@@ -863,14 +1034,21 @@ struct Actor__FinishLoadGameHook
     {
         func[I](a_this, a2);
 
+        /*
         static bool once = false;
         
         if (!once) {
-            if (GetActorTag(a_this, k_left) || GetActorTag(a_this, k_right)) {
-                logger::warn("Cached values for left/right increases are not zero. Some conflict maybe observed. Notify CASP mod author.");
-                once = true;
+            auto left = GetActorTag(a_this, k_left);
+            auto right = GetActorTag(a_this, k_right);
+            if (left || right) {
+                logger::warn("Cached values for left/right increases are not zero. Some conflict maybe observed. Notify CARP mod author. r:{}, l:{}, actor: {} ({:08X})", 
+                    right, left, a_this->GetName(), a_this->formID);
+                //logger::warn("Cached values for left/right increases are not zero. Some conflict maybe observed. Notify CARP mod author. r:{}, l:{},");
+                //once = true;
             }
         }
+        //*/
+
 
         float right_base = a_this->AsActorValueOwner()->GetBaseActorValue(RE::ActorValue::kWeaponSpeedMult);
         float left_base = a_this->AsActorValueOwner()->GetBaseActorValue(RE::ActorValue::kLeftWeaponSpeedMultiply);
@@ -884,16 +1062,18 @@ struct Actor__FinishLoadGameHook
 
         logger::debug("{:08X}: left {}/{}/{}, right {}/{}/{}", a_this->formID, left_base, left_mod, left_tmp, right_base, right_mod, right_tmp);
        
-
+        //if (false)
         {
             if (RE::AIProcess* process = a_this->GetActorRuntimeData().currentProcess; process) {
                 if (RE::CachedValues* cache = process->cachedValues; cache) {
-                    logger::trace("Resetting cache {:08X}", a_this->formID);
+                    //logger::trace("Resetting cache {:08X}", a_this->formID);
+                    //TODO: Not really a todo, but I previously always reset the cache.
+
+                    if (!right_base)
+                        InvalidateTotalCache(cache, RE::ActorValue::kWeaponSpeedMult);
                     
-                    //if (!right_base)
-                        ResetCache(cache, RE::ActorValue::kWeaponSpeedMult);
-                    //if (!left_base)
-                        ResetCache(cache, RE::ActorValue::kLeftWeaponSpeedMultiply);
+                    if (!left_base)
+                        InvalidateTotalCache(cache, RE::ActorValue::kLeftWeaponSpeedMultiply);
                 }
             }
         }
@@ -913,8 +1093,8 @@ struct Actor__FinishLoadGameHook
         
 
         if (!right_base || !left_base)
-            logger::warn("Setting base speed (left: {}, right: {}) on {}({:08X}). If this/these being zero is intended behaviour, notify CASP mod author.",
-                !left_base, !right_base, a_this->GetName(), a_this->formID);
+            logger::warn("Setting base speed (left: {}, right: {}) on {}({:08X}). If this/these being zero is intended behaviour, notify CARP mod author.",
+                left_base, right_base, a_this->GetName(), a_this->formID);
     }
 
 
@@ -1099,12 +1279,12 @@ struct SetEffectivenessHook
             uint32_t effect_flags = a_this->flags.underlying();
             uint32_t spec_flags = effect_flags >> 12;
 
-            logger::info("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
+            logger::debug("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
             
             //these correctly seem to be something related to duration and magnitude.
             //Although, which does which I'm unsure, but I know these likely ignore the settings somewhat
             auto ret_addr = (uintptr_t)_ReturnAddress();
-            logger::info("checks; mag: {}, dur: {}, returns at {:X}", (effect_flags & 0x1000), (spec_flags & 0x1), ret_addr);
+            logger::debug("checks; mag: {}, dur: {}, returns at {:X}", (effect_flags & 0x1000), (spec_flags & 0x1), ret_addr);
         }
         if (setting_flags != no_mag_dur && effectiveness != 1.f && effectiveness >= 0.f)
         {
@@ -1134,9 +1314,9 @@ struct SetEffectivenessHook
             uint32_t effect_flags = a_this->flags.underlying();
             uint32_t spec_flags = effect_flags >> 12;
 
-            logger::info("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
+            logger::debug("effective {} for {:08X}", effectiveness, a_this->effect->baseEffect->formID);
 
-            logger::info("checks; ig?: {}, dual cast: {}", (effect_flags & 0x1000), (spec_flags & 0x1));
+            logger::debug("checks; ig?: {}, dual cast: {}", (effect_flags & 0x1000), (spec_flags & 0x1));
         }
 
         //Inner func, might have to implement upper changes in as well.
@@ -1262,7 +1442,9 @@ constexpr std::string_view papyrusAPIString = "CASP_PapyrusAPI";
 
 int32_t GetVerisonNumber(RE::StaticFunctionTag* = nullptr)
 {
-    return 1;
+    const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
+    auto version = plugin->GetVersion();
+    return version.pack();
 }
 
 
@@ -1324,12 +1506,15 @@ struct Condition_HasKeywordHook
             //Later, this value can also mean didn't install right if it's -1
             // This also might mean version so if you want to check if it's installed, do 
             // != 0
-            *a4 = GetVerisonNumber();
 
+            const auto* plugin = SKSE::PluginDeclaration::GetSingleton();
+            auto version = plugin->GetVersion();
+            *a4 = version.pack();
+            
             const auto log = RE::ConsoleLog::GetSingleton();
             
             if (log->IsConsoleMode() == true)
-                log->Print("CASP Installed. Version >> %0.2f", *a4);
+                log->Print("CARP Installed. Version >> %0.2f", version);
 
             return true;
         }else
@@ -1345,6 +1530,7 @@ struct Condition_HasKeywordHook
 //*/
 void AddSettings()
 {
+    
     {
         auto* collection = RE::GameSettingCollection::GetSingleton();
 
@@ -1367,6 +1553,11 @@ void InitializeMessaging() {
         switch (message->type) {
         case MessagingInterface::kPostPostLoad:
             SetEffectivenessHook::Patch();
+            break;
+
+        case MessagingInterface::kDataLoaded:
+            SetBaseActorValueHook::Patch();
+            ModBaseActorValueHook::Patch();
             break;
         }
         })) {
@@ -1392,6 +1583,9 @@ SKSEPluginLoad(const LoadInterface* skse) {
     ValueEffect_FinishLoadGameHook::Patch();
     GetActorValueHook::Patch();
     GetActorValueModifierHook::Patch();
+    //SetBaseActorValueHook::Patch();
+    //ModBaseActorValueHook::Patch();
+    
     ActorConstructorHook::Patch();
     Actor__FinishLoadGameHook::Patch();
     Condition_HasKeywordHook::Patch();
@@ -1409,3 +1603,5 @@ SKSEPluginLoad(const LoadInterface* skse) {
     return true;
 
 }
+
+
