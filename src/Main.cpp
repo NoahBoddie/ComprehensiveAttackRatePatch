@@ -1069,10 +1069,10 @@ struct Actor__FinishLoadGameHook
                     //logger::trace("Resetting cache {:08X}", a_this->formID);
                     //TODO: Not really a todo, but I previously always reset the cache.
 
-                    if (!right_base)
+                    //if (!right_base)
                         InvalidateTotalCache(cache, RE::ActorValue::kWeaponSpeedMult);
                     
-                    if (!left_base)
+                    //if (!left_base)
                         InvalidateTotalCache(cache, RE::ActorValue::kLeftWeaponSpeedMultiply);
                 }
             }
