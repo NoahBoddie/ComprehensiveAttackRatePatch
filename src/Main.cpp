@@ -140,6 +140,8 @@ RE::TESObjectWEAP* GetFists()
 
 float GetEffectiveSpeed(RE::ActorValueOwner* target, bool right)
 {
+    //TODO: This is causing the issue. Unsure why, but investigate.
+    
     RE::ActorValue speed_av = right ? RE::ActorValue::kWeaponSpeedMult : RE::ActorValue::kLeftWeaponSpeedMultiply;
 
     float speed = target->GetActorValue(speed_av);
@@ -248,7 +250,7 @@ struct WeaponSpeedMultHook
 	static void Patch()
 	{
         constexpr bool is_write_branch = true;
-
+        
         if constexpr (is_write_branch)
         {
             //SE: (0x3BE440), AE: (0x3D7FB0), VR: ???
@@ -297,10 +299,15 @@ struct WeaponSpeedMultHook
             weap = fists;//reinterpret_cast<RE::TESObjectWEAP*>(fists);
 
         float speed = GetEffectiveSpeed(av_owner, !is_left);
+        //RE::ActorValue speed_av = !is_left ? RE::ActorValue::kWeaponSpeedMult : RE::ActorValue::kLeftWeaponSpeedMultiply;
+
+        //float speed = av_owner->GetActorValue(speed_av);
+
+
 
         bool two_handed = weap->weaponData.animationType.any
         (
-            //RE::WEAPON_TYPE::kCrossbow, 
+            RE::WEAPON_TYPE::kCrossbow, 
             RE::WEAPON_TYPE::kTwoHandAxe, 
             RE::WEAPON_TYPE::kTwoHandSword
         );
@@ -310,11 +317,12 @@ struct WeaponSpeedMultHook
         if (!two_handed_speed_mult){
             two_handed_speed_mult = RE::GameSettingCollection::GetSingleton()->GetSetting("fWeaponTwoHandedAnimationSpeedMult");
         }
-        else 
+        
+        
         {
             switch (*weap->weaponData.animationType)
             {
-            //case RE::WEAPON_TYPE::kCrossbow:
+            case RE::WEAPON_TYPE::kCrossbow:
             case RE::WEAPON_TYPE::kTwoHandAxe:
             case RE::WEAPON_TYPE::kTwoHandSword:
                 float mult = two_handed_speed_mult->GetFloat();
@@ -495,16 +503,20 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
         case RE::ActorValue::kWeaponSpeedMult:
             //target->pad1C += HandleActorTag(a_this, is_on, value);
             GetActorTag(target, k_right) += HandleActorTag(a_this, is_on, value);
-            logger::debug("Right1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_right));
+            //GetActorTag(target, k_right)++;
+            //HandleActorTag(a_this, is_on, value);
+            //logger::debug("Right1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_right));
             break;
 
         case RE::ActorValue::kLeftWeaponSpeedMultiply:
             //target->GetActorRuntimeData().pad0EC += HandleActorTag(a_this, is_on, value);
             GetActorTag(target, k_left) += HandleActorTag(a_this, is_on, value);
-            logger::debug("Left1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_left));
+            //GetActorTag(target, k_left)++;
+            //HandleActorTag(a_this, is_on, value);
+            //logger::debug("Left1st {} ({:08X}): {}, {}", is_on ? "ON" : "OFF", a_this->effect->baseEffect->formID, value, GetActorTag(target, k_left));
             break;
         }
-
+        
         
         if (is_dual)
         {
@@ -512,6 +524,14 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
             
             //Dual value mod hasn't been done yet and prick that I am I don't feel like making it
             //I'm also going to stick with this because it's the correct offset.
+            
+            //The current version of this isn't quite correct, and the thing to get the repository is busted
+            // so negatory.
+            //RE::DualValueModifierEffect* dual_mod = skyrim_cast<RE::DualValueModifierEffect*>(a_this);
+            
+            //if (!dual_mod)
+            //    return;
+
             float dual_mod = *stl::adjust_pointer<float>(a_this, 0x98);//GetDualMod(a_this);//
             //float dual_mod = skyrim_cast<RE::DualValueModifierEffect*>(a_this)->secondaryAVWeight;
             
@@ -649,7 +669,7 @@ struct ValueEffectFinishHook
         auto effect = a_this->effect;
 
         float alignment = a_this->value >= 0 ? 1 : -1;
-
+        
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true &&
             effect->baseEffect->IsDetrimental() == false)
             //HandleSpeedEffect(a_this, a_this->value, I == 1, false);
@@ -1069,6 +1089,8 @@ struct Actor__FinishLoadGameHook
                     //logger::trace("Resetting cache {:08X}", a_this->formID);
                     //TODO: Not really a todo, but I previously always reset the cache.
 
+                    //Also if I seek to do this, maybe flags would be better to do it.
+
                     //if (!right_base)
                         InvalidateTotalCache(cache, RE::ActorValue::kWeaponSpeedMult);
                     
@@ -1396,7 +1418,7 @@ struct SetEffectivenessHook
     {
         if (patch_mult)
             mitigation = 1;
-
+        
         outer_thunk(a_this, effectiveness, req_hostile);
 
         if (patch_mult)
@@ -1461,6 +1483,10 @@ bool RegisterFuncs(RE::BSScript::IVirtualMachine* a_vm)
 
     return true;
 };
+
+
+
+
 
 //write_branch
 struct Condition_HasKeywordHook
@@ -1549,15 +1575,39 @@ void AddSettings()
 void InitializeMessaging() {
     //Make a function in AVG so that one can get the effective speed mult(which is the speed mult that you'd see when swings happen).
     
+    static RE::TESGlobal* simonSpeedVariable = nullptr;
+
+
     if (!GetMessagingInterface()->RegisterListener([](MessagingInterface::Message* message) {
         switch (message->type) {
-        case MessagingInterface::kPostPostLoad:
-            SetEffectivenessHook::Patch();
+        case MessagingInterface::kPostLoad://If this is in post load it can be after scrambled bugs but before  po3's.
+            SetEffectivenessHook::Patch();//
             break;
 
         case MessagingInterface::kDataLoaded:
-            SetBaseActorValueHook::Patch();
-            ModBaseActorValueHook::Patch();
+            SetBaseActorValueHook::Patch();//
+            ModBaseActorValueHook::Patch();//
+
+            if (auto buffer = RE::TESForm::LookupByID(0x01ADA616))
+            {
+                simonSpeedVariable = buffer->As<RE::TESGlobal>();
+
+                if (simonSpeedVariable) {
+                    logger::info("SimonrimAttackSpeedFix global found.");
+                }
+                else {
+                    logger::warn("SimonrimAttackSpeedFix global id not convertible to TESGlobal.");
+                }
+
+            }
+            
+            break;
+
+        case MessagingInterface::kPostLoadGame:
+            if (simonSpeedVariable && simonSpeedVariable->value == 0.f) {
+                logger::debug("Setting SimonrimAttackSpeedFix global to 1.");
+                simonSpeedVariable->value = 1.0f;
+            }
             break;
         }
         })) {
@@ -1585,7 +1635,7 @@ SKSEPluginLoad(const LoadInterface* skse) {
     GetActorValueModifierHook::Patch();
     //SetBaseActorValueHook::Patch();
     //ModBaseActorValueHook::Patch();
-    
+
     ActorConstructorHook::Patch();
     Actor__FinishLoadGameHook::Patch();
     Condition_HasKeywordHook::Patch();
@@ -1597,7 +1647,7 @@ SKSEPluginLoad(const LoadInterface* skse) {
     }
 
     //SetEffectivenessHook::Patch();//Hooking post load for compatibility with scrambled bugs
-    
+
     AddSettings();
    
     return true;
