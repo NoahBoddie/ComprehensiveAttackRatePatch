@@ -133,8 +133,9 @@ namespace PerkEntryPointExtenderAPI
 
 		HINSTANCE API = GetModuleHandle(L"PerkEntryPointExtender.dll");
 
-		if (API == nullptr) {
-			logger::critical("PerkEntryPointExtender.dll not found, API will remain non functional.");
+		if (static bool once = false; !once && API == nullptr) {
+			once = true;
+			logger::warn("PerkEntryPointExtender.dll not found, API will remain non functional.");
 			return nullptr;
 		}
 
