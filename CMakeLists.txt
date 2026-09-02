@@ -6,7 +6,7 @@ message("Using toolchain file ${CMAKE_TOOLCHAIN_FILE}.")
 ########################################################################################################################
 project(
         ComprehensiveAttackRatePatch
-        VERSION 1.1.2.10
+        VERSION 1.1.2.15
         LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -45,12 +45,32 @@ source_group(
 ### Build options
 #########################################################################################################################
 #message("Options:")
-#option(BUILD_TESTS "Build unit tests." OFF)
+option(BUILD_TESTS "Build unit tests." OFF)
 #message("\tTests: ${BUILD_TESTS}")
 
 ########################################################################################################################
 ## Configure target DLL
 ########################################################################################################################
+
+set(BUILD_TESTS OFF)
+
+macro(set_from_environment VARIABLE)
+	if (NOT DEFINED ${VARIABLE} AND DEFINED ENV{${VARIABLE}})
+		set(${VARIABLE} $ENV{${VARIABLE}})
+	endif ()
+endmacro()
+
+set_from_environment(CommonLibSSEPath)
+
+if (DEFINED CommonLibSSEPath AND NOT ${CommonLibSSEPath} STREQUAL "" AND IS_DIRECTORY ${CommonLibSSEPath})
+	add_subdirectory(${CommonLibSSEPath} CommonLibSSE)
+else ()
+	message(
+		FATAL_ERROR
+		"Variable CommonLibSSEPath is not set."
+	)
+endif ()
+
 
 find_package(CommonLibSSE REQUIRED)
 

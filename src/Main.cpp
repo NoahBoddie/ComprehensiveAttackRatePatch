@@ -106,9 +106,9 @@ int IsCallOrJump(uintptr_t addr)
 }
 
 //SE: 0x692390, AE: 0x6CC2B0, VR: ???
-REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> InvalidateTotalCache{ REL::RelocationID(39159, 40225, 0) };
+REL::Relocation<void(RE::CachedValues*, RE::ActorValue)> InvalidateTotalCache{ REL::RelocationID(39159, 40225) };
 //SE: (0x63E080), AE: (0x676820)
-REL::Relocation<void(RE::ActorValueStorage*, RE::ActorValue)> ResetBaseValue{ REL::RelocationID(38063, 39018, 0) };
+REL::Relocation<void(RE::ActorValueStorage*, RE::ActorValue)> ResetBaseValue{ REL::RelocationID(38063, 39018) };
 
 
 using SettingFlag = RE::EffectSetting::EffectSettingData::Flag;
@@ -128,7 +128,20 @@ RE::FloatSetting magnitudeComparison{ "fMagnitudeComparison", 10000.f };
 
 static RE::TESObjectWEAP* fists = RE::TESForm::LookupByID<RE::TESObjectWEAP>(0x1F4);
 
+//TODO: The below may be a better hook for magic effects if I can ever find when application is going off or when going on.
+// To the above, the encasing function might be better
+//567A80 + 2D1
+
+
 RE::TESObjectWEAP* GetFists()
+{
+    //SE: 0x2EFF868, AE: 0x2F99450
+    constexpr REL::RelocationID loc(514923, 401061);
+    REL::Relocation<RE::NiPointer<RE::TESObjectWEAP>*> singleton{ loc };
+    return singleton->get();
+}
+
+RE::TESObjectWEAP* GetFistsOld()
 {
     static RE::TESObjectWEAP* a_fists = nullptr;
 
@@ -293,10 +306,10 @@ struct WeaponSpeedMultHook
     
     static float thunk1(RE::ActorValueOwner* av_owner, RE::TESObjectWEAP* weap, bool is_left)
     {
-        static RE::TESObjectWEAP* fists = RE::TESForm::LookupByID<RE::TESObjectWEAP>(0x1F4);
+        RE::TESObjectWEAP* fists = GetFists();
 
         if (!weap)
-            weap = fists;//reinterpret_cast<RE::TESObjectWEAP*>(fists);
+            weap = fists;
 
         float speed = GetEffectiveSpeed(av_owner, !is_left);
         //RE::ActorValue speed_av = !is_left ? RE::ActorValue::kWeaponSpeedMult : RE::ActorValue::kLeftWeaponSpeedMultiply;
@@ -304,14 +317,6 @@ struct WeaponSpeedMultHook
         //float speed = av_owner->GetActorValue(speed_av);
 
 
-
-        bool two_handed = weap->weaponData.animationType.any
-        (
-            RE::WEAPON_TYPE::kCrossbow, 
-            RE::WEAPON_TYPE::kTwoHandAxe, 
-            RE::WEAPON_TYPE::kTwoHandSword
-        );
-        
         static RE::Setting* two_handed_speed_mult = RE::GameSettingCollection::GetSingleton()->GetSetting("fWeaponTwoHandedAnimationSpeedMult");
 
         if (!two_handed_speed_mult){
@@ -322,7 +327,9 @@ struct WeaponSpeedMultHook
         {
             switch (*weap->weaponData.animationType)
             {
-            case RE::WEAPON_TYPE::kCrossbow:
+            //These don't actually count as two handed weapons for this. Go figure.
+            //case RE::WEAPON_TYPE::kBow:
+            //case RE::WEAPON_TYPE::kCrossbow:
             case RE::WEAPON_TYPE::kTwoHandAxe:
             case RE::WEAPON_TYPE::kTwoHandSword:
                 float mult = two_handed_speed_mult->GetFloat();
@@ -520,22 +527,12 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
         
         if (is_dual)
         {
-            RE::EffectSetting* setting = a_this->GetBaseObject();
-            
-            //Dual value mod hasn't been done yet and prick that I am I don't feel like making it
-            //I'm also going to stick with this because it's the correct offset.
-            
-            //The current version of this isn't quite correct, and the thing to get the repository is busted
-            // so negatory.
-            //RE::DualValueModifierEffect* dual_mod = skyrim_cast<RE::DualValueModifierEffect*>(a_this);
-            
-            //if (!dual_mod)
-            //    return;
+            RE::DualValueModifierEffect* dual_effect = static_cast<RE::DualValueModifierEffect*>(a_this);
 
-            float dual_mod = *stl::adjust_pointer<float>(a_this, 0x98);//GetDualMod(a_this);//
-            //float dual_mod = skyrim_cast<RE::DualValueModifierEffect*>(a_this)->secondaryAVWeight;
+            //float dual_mod = *stl::adjust_pointer<float>(a_this, 0x98);//Old
+            float dual_mod = dual_effect->GetSecondaryAVWeight();
             
-            switch (setting->data.secondaryAV)
+            switch (dual_effect->GetAdditionalActorValue())
             {
             case RE::ActorValue::kWeaponSpeedMult:
                 GetActorTag(target, k_right) += HandleActorTag(a_this, is_on, value * dual_mod);
@@ -550,6 +547,36 @@ void HandleSpeedEffect(RE::ValueModifierEffect* a_this, float value, bool is_dua
 
         
 }
+
+
+
+
+bool HandleSurvivalSpeedEffect(RE::DualValueModifierEffect* a_this, bool is_on)
+{
+    
+
+    if (a_this->effect->baseEffect->IsDetrimental() == true)
+        return false;
+      
+    float mode = is_on ? 1 : -1;
+    
+
+    RE::Actor* target = GetTargetActor(a_this->target);
+
+    if (!target) {
+        logger::debug("Null target");
+        return false;
+    }
+
+
+    GetActorTag(target, k_right) += -1 * mode;
+    GetActorTag(target, k_left) += -1 * mode;
+
+    return true;
+}
+
+
+
 
 
 //NOTICE, to all vtable hooks, ValueAndConditionsEffect may be implemented soon, so might want to get my hooks into that.
@@ -570,6 +597,9 @@ constexpr size_t VoidEffect = std::tuple_size<EffectTypes>::value - 1;
 
 template<size_t I>
 using ModifierEffect = std::tuple_element_t<I, EffectTypes>;
+
+template <size_t I>
+constexpr bool IsDualValueModifier = std::derived_from<ModifierEffect<I>, RE::DualValueModifierEffect>;
 
 
 //VTABLE
@@ -592,8 +622,15 @@ struct ValueEffectStartHook
     template <int I = VoidEffect>
     static void thunk(ModifierEffect<I>* a_this)
     {
+
         func[I](a_this);
         
+
+        //if constexpr (std::is_same_v<ModifierEffect<I>, RE::DualValueModifierEffect>)
+        //{
+        //    if (HandleSurvivalSpeedEffect(a_this, true))
+        //        return;
+        //}
 
         if constexpr (I == 4)
         {
@@ -615,7 +652,7 @@ struct ValueEffectStartHook
             effect->baseEffect->IsDetrimental() == false)
             //Redesign for it to use
             //return HandleSpeedEffect(a_this, a_this->value, I == 1, true);
-            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
+            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, IsDualValueModifier<I>, true);
         else
             return;
         
@@ -630,7 +667,7 @@ struct ValueEffectStartHook
             "PeakMod",
             "Enhance"
         };
-        if constexpr (I == 1)
+        if constexpr (IsDualValueModifier<I>)
         {
             //is dual modifier, peak a bit into the base object for a second round of this function
         }
@@ -665,6 +702,12 @@ struct ValueEffectFinishHook
     {
         func[I](a_this);
 
+        //if constexpr (std::is_same_v<ModifierEffect<I>, RE::DualValueModifierEffect>)
+        //{
+        //    if (HandleSurvivalSpeedEffect(a_this, true))
+        //        return;
+        //}
+
 
         auto effect = a_this->effect;
 
@@ -672,8 +715,8 @@ struct ValueEffectFinishHook
         
         if (a_this->flags.all(RE::ActiveEffect::Flag::kRecovers) == true &&
             effect->baseEffect->IsDetrimental() == false)
-            //HandleSpeedEffect(a_this, a_this->value, I == 1, false);
-            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, false);
+            //HandleSpeedEffect(a_this, a_this->value, IsDualValueModifier<I>, false);
+            HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, IsDualValueModifier<I>, false);
 
         //return;
 
@@ -710,6 +753,84 @@ struct ValueEffectFinishHook
     static inline REL::Relocation<decltype(thunk<>)> func[5];
 };
 
+
+//VTABLE
+struct ValueEffect_FinishLoadGameHook
+{
+    static void Patch()
+    {
+        func[0] = REL::Relocation<uintptr_t>{ ModifierEffect<0>::VTABLE[0] }.write_vfunc(10, thunk<0>);
+        func[1] = REL::Relocation<uintptr_t>{ ModifierEffect<1>::VTABLE[0] }.write_vfunc(10, thunk<1>);
+        func[2] = REL::Relocation<uintptr_t>{ ModifierEffect<2>::VTABLE[0] }.write_vfunc(10, thunk<2>);
+        func[3] = REL::Relocation<uintptr_t>{ ModifierEffect<3>::VTABLE[0] }.write_vfunc(10, thunk<3>);
+        func[4] = REL::Relocation<uintptr_t>{ ModifierEffect<4>::VTABLE[0] }.write_vfunc(10, thunk<4>);
+
+        logger::info("ValueEffectLoadGameHook complete...");
+    }
+
+
+    template <int I = VoidEffect>
+    static void thunk(ModifierEffect<I>* a_this)
+    {
+        constexpr auto applied_effect_flag = RE::ActiveEffect::Flag(1 << 16);
+
+        func[I](a_this);
+
+        //if constexpr (std::is_same_v<ModifierEffect<I>, RE::DualValueModifierEffect>)
+        //{
+        //    if (HandleSurvivalSpeedEffect(a_this, true))
+        //        return;
+        //}
+
+        auto effect = a_this->effect;
+
+        float alignment = a_this->magnitude >= 0 ? 1 : -1;
+
+
+        float magnitude = effect->GetMagnitude();
+
+        //If for some reason something is a value modifier that modifies speed that is zero, but the current value is equal to 1, were going to treat it like its 1.
+        // only doing in load right now, because that's where the problem
+        if (auto act_mag = abs(a_this->value); !magnitude && act_mag >= 1)
+            magnitude = act_mag;
+
+
+        //This hit even though it was false. Curious. 
+        // The idea works, however it will definitely have issues
+        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) &&
+            effect->baseEffect->IsDetrimental() == false &&
+            (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
+                !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions))) {//Has effects applied currently
+            //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
+            //HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
+            HandleSpeedEffect(a_this, magnitude * alignment, IsDualValueModifier<I>, true);
+        }
+        else
+        {
+            return;
+        }
+
+
+
+        static constexpr std::string_view names[]
+        {
+            "ValueMod",
+            "DualMod",
+            "AccumMod",
+            "PeakMod",
+            "Enhance"
+        };
+
+
+        //logger::debug("LOAD {}: {}", names[I], a_this->magnitude);
+        logger::debug("LOAD {} ({}): {}", names[I], effect->baseEffect->GetName(), a_this->effect->GetMagnitude() * alignment);
+    }
+
+
+
+
+    static inline REL::Relocation<decltype(thunk<>)> func[5];
+};
 
 //write_branch
 struct GetActorValueModifierHook
@@ -929,77 +1050,145 @@ struct ModBaseActorValueHook
 
 
 
-//VTABLE
-struct ValueEffect_FinishLoadGameHook
+
+
+
+
+struct SurvivalModePatch
 {
-    static void Patch()
+    inline static RE::TESGlobal* survivalModeEnabled = nullptr;
+    inline static RE::TESGlobal* hungerStage2 = nullptr;
+
+    inline static RE::TESGlobal* hungerNeed = nullptr;
+
+    inline static RE::EffectSetting* damageWeaponSpeed = nullptr;
+
+    inline static std::string_view pluginName = "ccQDRSSE001-SurvivalMode.esl";
+
+
+
+    static void CheckCondition(RE::TESConditionItem* item, bool first)
     {
-        func[0] = REL::Relocation<uintptr_t>{ ModifierEffect<0>::VTABLE[0] }.write_vfunc(10, thunk<0>);
-        func[1] = REL::Relocation<uintptr_t>{ ModifierEffect<1>::VTABLE[0] }.write_vfunc(10, thunk<1>);
-        func[2] = REL::Relocation<uintptr_t>{ ModifierEffect<2>::VTABLE[0] }.write_vfunc(10, thunk<2>);
-        func[3] = REL::Relocation<uintptr_t>{ ModifierEffect<3>::VTABLE[0] }.write_vfunc(10, thunk<3>);
-        func[4] = REL::Relocation<uintptr_t>{ ModifierEffect<4>::VTABLE[0] }.write_vfunc(10, thunk<4>);
+        if (!item)
+            return;
 
-        logger::info("ValueEffectLoadGameHook complete...");
-    }
-
-
-    template <int I = VoidEffect>
-    static void thunk(ModifierEffect<I>* a_this)
-    {
-        constexpr auto applied_effect_flag = RE::ActiveEffect::Flag(1 << 16);
-
-        func[I](a_this);
-
-        auto effect = a_this->effect;
-
-        float alignment = a_this->magnitude >= 0 ? 1 : -1;
+        using OpCode = decltype(item->data.flags.opCode);
+        using Func = decltype(*item->data.functionData.function);
+        using ItemObject = decltype(*item->data.object);
+        using ItemObject = decltype(*item->data.object);
 
 
-        float magnitude = effect->GetMagnitude();
 
-        //If for some reason something is a value modifier that modifies speed that is zero, but the current value is equal to 1, were going to treat it like its 1.
-        // only doing in load right now, because that's where the problem
-        if (auto act_mag = abs(a_this->value); !magnitude && act_mag >= 1)
-            magnitude = act_mag;
+        if (first)
+        {
+            if (item->data.flags.isOR != true ||
+                item->data.comparisonValue.f != 0.0f ||
 
-
-        //This hit even though it was false. Curious. 
-        // The idea works, however it will definitely have issues
-        if (a_this->flags.all(applied_effect_flag, RE::ActiveEffect::Flag::kRecovers) &&
-            effect->baseEffect->IsDetrimental() == false &&
-            (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue ||
-                !a_this->flags.any(RE::ActiveEffect::Flag::kHasConditions))) {//Has effects applied currently
-            //HandleSpeedEffect(a_this, a_this->magnitude, I == 1, true);
-            //HandleSpeedEffect(a_this, a_this->effect->GetMagnitude() * alignment, I == 1, true);
-            HandleSpeedEffect(a_this, magnitude * alignment, I == 1, true);
+                item->data.flags.opCode != OpCode::kEqualTo ||
+                item->data.flags.global != false ||
+                item->data.functionData.function != Func::kGetGlobalValue ||
+                item->data.functionData.params[0] != survivalModeEnabled ||
+                item->data.object != ItemObject::kTarget)
+            {
+                return;
+            }
         }
         else
         {
-            return;
+            if (item->data.flags.isOR != false ||
+                item->data.comparisonValue.g != hungerNeed ||
+                item->data.flags.opCode != OpCode::kLessThan ||
+                item->data.flags.global != true ||
+                item->data.functionData.function != Func::kGetGlobalValue ||
+                item->data.functionData.params[0] != hungerStage2 ||
+                item->data.object != ItemObject::kTarget)
+            {
+                return;
+            }
         }
 
-        
 
-        static constexpr std::string_view names[]
+        //To undo all of this, I make the realization that I can just make use OR, then it's failure won't matter
+        //Correction, or would skip if it succeeds.
+
+        item->data.flags.isOR = false;
+        item->data.comparisonValue.f = 0.f;
+
+        item->data.flags.opCode = OpCode::kEqualTo;
+        item->data.flags.global = false;
+        item->data.functionData.function = Func::kIsIdlePlaying;
+        item->data.functionData.params[0] = nullptr;
+        item->data.object = ItemObject::kTarget;
+
+    }
+
+    static void EditHold()
+    {
+        RE::SpellItem* dualFlurry30 = RE::TESForm::LookupByID<RE::SpellItem>(0x00108A3F);
+        RE::SpellItem* dualFlurry50 = RE::TESForm::LookupByID<RE::SpellItem>(0x00108A40);
+
+
+        if (dualFlurry30)
         {
-            "ValueMod",
-            "DualMod",
-            "AccumMod",
-            "PeakMod",
-            "Enhance"
-        };
-        
+            auto head = dualFlurry30->effects[0]->conditions.head;
 
-        //logger::debug("LOAD {}: {}", names[I], a_this->magnitude);
-        logger::debug("LOAD {} ({}): {}", names[I], effect->baseEffect->GetName(), a_this->effect->GetMagnitude() * alignment);
+            CheckCondition(head, true);
+            CheckCondition(head->next, false);
+
+        }
+
+        if (dualFlurry50)
+        {
+            auto head = dualFlurry50->effects[0]->conditions.head;
+
+            CheckCondition(head, true);
+            CheckCondition(head->next, false);
+
+        }
+    }
+
+    void Init()
+    {
+        damageWeaponSpeed = RE::TESDataHandler::GetSingleton()->LookupForm<RE::EffectSetting>(0x835, pluginName);
+        survivalModeEnabled = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESGlobal>(0x826, pluginName);
+        hungerStage2 = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESGlobal>(0x802, pluginName);
+        hungerNeed = RE::TESDataHandler::GetSingleton()->LookupForm<RE::TESGlobal>(0x81A, pluginName);
+    }
+};
+
+//write_call
+struct ActiveEffect_ConditionCheck_SurvivalMode
+{
+    static void Patch()
+    {
+        REL::Relocation<uintptr_t> hook{ REL::RelocationID { 33288, 34063 }, 0x1A };//SE: 0x53E5E0, AE: 0x55F7C0, VR: 0x5CDBF0
+
+        auto& trampoline = SKSE::GetTrampoline();
+
+        func = trampoline.write_call<5>(hook.address(), thunk);
+
+        logger::info("ActiveEffect_ConditionCheck complete...");
+    }
+
+
+    static void thunk(RE::ActiveEffect* a_this, float a2, bool a3)
+    {
+        func(a_this, a2, a3);
+
+        //This will prevent the damage weapon speed effect from ever taking root.
+        if (a_this->effect->baseEffect == SurvivalModePatch::damageWeaponSpeed)
+        {
+            if (a_this->conditionStatus == RE::ActiveEffect::ConditionStatus::kTrue)
+                a_this->conditionStatus = RE::ActiveEffect::ConditionStatus::kFalse;
+        }
     }
 
 
 
 
-    static inline REL::Relocation<decltype(thunk<>)> func[5];
+    static inline REL::Relocation<decltype(thunk)> func;
 };
+
 
 
 //write_call
@@ -1169,13 +1358,13 @@ struct SetEffectivenessHook
         //Use variantID at some point pls.
         //SE: (0x540360), AE: NA(inlined), VR: ???
         //7B aint the real hook, nor EA
-        auto inner_hook_addr = REL::RelocationID(33320, 0, 0).address();
+        auto inner_hook_addr = REL::RelocationID(33320, 0).address();
         
         //SE: (0x53DEB0), AE: (0x55EEA0), VR: ???
-        auto outer_hook_addr = REL::RelocationID(33277, 34052, 0).address();
+        auto outer_hook_addr = REL::RelocationID(33277, 34052).address();
         
         //SE: 0x554700, AE: 0x5771B0, VR: ???//0x4A3/0x656
-        auto wrap_hook_addr = REL::RelocationID(33763, 34547, 0).address() + REL::VariantOffset(0x4A3, 0x656, 0).offset();
+        auto wrap_hook_addr = REL::RelocationID(33763, 34547).address() + REL::VariantOffset(0x4A3, 0x656, 0x427).offset();
 
 
         auto& trampoline = SKSE::GetTrampoline();
@@ -1435,13 +1624,14 @@ struct SetEffectivenessHook
         case REL::Module::Runtime::AE:
             return reinterpret_cast<uintptr_t>(outer_thunk);
 
+        case REL::Module::Runtime::VR:
         case REL::Module::Runtime::SE:
             return reinterpret_cast<uintptr_t>(inner_thunk);
 
-        case REL::Module::Runtime::VR:
-            MessageBox(NULL, L"This fix does not currently support VR.", L"Invalid Module Detected", MB_OK);
-            logger::critical("This fix does not currently support VR. Terminating program.");
-            throw nullptr;
+        //case REL::Module::Runtime::VR:
+            //MessageBox(NULL, L"This fix does not currently support VR.", L"Invalid Module Detected", MB_OK);
+            //logger::critical("This fix does not currently support VR. Terminating program.");
+            //throw nullptr;
 
         default:
             MessageBox(NULL, L"Unknown version of skyrim detected.", L"Invalid Module Detected", MB_OK);
@@ -1494,7 +1684,7 @@ struct Condition_HasKeywordHook
     static void Patch()
     {
         //SE: (0x2DDA40), AE: (0x2F3C80), VR: ???
-        auto hook_addr = REL::RelocationID(21187, 21644, 0).address();
+        auto hook_addr = REL::RelocationID(21187, 21644).address();
         auto return_addr = hook_addr + 0x6;
         //*
         struct Code : Xbyak::CodeGenerator
@@ -1572,11 +1762,72 @@ void AddSettings()
     }
 }
 
+
+
+struct Event : public RE::BSTEventSink<RE::MenuOpenCloseEvent>
+{
+    using Control = RE::BSEventNotifyControl;
+    
+    inline static RE::TESGlobal* simonSpeedVariable = nullptr;
+
+    static void Lock()
+    {
+        simonSpeedVariable->formFlags |= RE::TESGlobal::RecordFlags::kConstant;
+        simonSpeedVariable->value = 1.0f;
+    }
+
+    Control ProcessEvent(const RE::MenuOpenCloseEvent* a_event, RE::BSTEventSource<RE::MenuOpenCloseEvent>* a_eventSource)
+    {
+        if (a_event->menuName == RE::FaderMenu::MENU_NAME)
+        {
+            Lock();
+        }
+
+        return Control::kContinue;
+    }
+
+    static Event* GetSingleton()
+    {
+        static Event singleton;
+        
+        return std::addressof(singleton);
+    }
+
+
+    static void TryRegister()
+    {
+
+        if (auto buffer = RE::TESForm::LookupByID(0x01ADA616))
+        {
+            simonSpeedVariable = buffer->As<RE::TESGlobal>();
+
+            if (simonSpeedVariable) {
+                logger::info("SimonrimAttackSpeedFix global found Attempting lock...(1/2)");
+
+                //if this fucks up somehow I would want it to crash if I'm being real.
+                RE::UI::GetSingleton()->AddEventSink(GetSingleton());
+                
+                Lock();
+
+
+                logger::info("SimonrimAttackSpeedFix lock set. (2/2)");
+            }
+            else {
+                logger::warn("SimonrimAttackSpeedFix global id not convertible to TESGlobal.");
+            }
+
+        }
+
+       
+    }
+};
+
+
+
 void InitializeMessaging() {
     //Make a function in AVG so that one can get the effective speed mult(which is the speed mult that you'd see when swings happen).
     
-    static RE::TESGlobal* simonSpeedVariable = nullptr;
-
+  
 
     if (!GetMessagingInterface()->RegisterListener([](MessagingInterface::Message* message) {
         switch (message->type) {
@@ -1588,27 +1839,11 @@ void InitializeMessaging() {
             SetBaseActorValueHook::Patch();//
             ModBaseActorValueHook::Patch();//
 
-            if (auto buffer = RE::TESForm::LookupByID(0x01ADA616))
-            {
-                simonSpeedVariable = buffer->As<RE::TESGlobal>();
-
-                if (simonSpeedVariable) {
-                    logger::info("SimonrimAttackSpeedFix global found.");
-                }
-                else {
-                    logger::warn("SimonrimAttackSpeedFix global id not convertible to TESGlobal.");
-                }
-
-            }
+            Event::TryRegister();
             
             break;
 
-        case MessagingInterface::kPostLoadGame:
-            if (simonSpeedVariable && simonSpeedVariable->value == 0.f) {
-                logger::debug("Setting SimonrimAttackSpeedFix global to 1.");
-                simonSpeedVariable->value = 1.0f;
-            }
-            break;
+
         }
         })) {
         stl::report_and_fail("Unable to register message listener.");
