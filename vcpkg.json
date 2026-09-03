@@ -4,8 +4,8 @@
   "version-string": "1.1.1.4",
   "port-version": 0,
   "description": "A plugin that fixes the infamous weapon speed mult glitch, as well as other QOL and gameplay fixes.",
-  "homepage": "https://www.skyrimng.com",
-  "license": "Apache-2.0",
+
+  "license": "GPL-3.0-or-later",
   "dependencies": [
     "commonlibsse-ng",
     "directxmath",
